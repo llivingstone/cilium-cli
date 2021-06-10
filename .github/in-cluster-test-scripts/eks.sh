@@ -18,3 +18,7 @@ cilium connectivity test --test '!/pod-to-local-nodeport' --all-flows
 
 # Retrieve Cilium  status
 cilium status
+
+# Grab a sysdump and move it to the persistent volume.
+cilium sysdump --output-filename cilium-sysdump-out
+mv cilium-sysdump-out.zip /output

@@ -1,0 +1,4 @@
+podName: cilium-cli-output
+pvc:
+  name: cilium-cli-output
+tag: latest
