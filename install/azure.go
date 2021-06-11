@@ -39,6 +39,11 @@ func (m *azureVersionValidation) Check(ctx context.Context, k *K8sInstaller) err
 	return nil
 }
 
+type accountInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type azurePrincipalOutput struct {
 	AppID       string `json:"appId"`
 	DisplayName string `json:"displayName"`
@@ -51,12 +56,19 @@ type aksClusterInfo struct {
 	NodeResourceGroup string `json:"nodeResourceGroup"`
 }
 
-type accountInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+func (k *K8sInstaller) aksSetup(ctx context.Context) error {
+	if err := k.azureRetrieveSubscriptionID(ctx); err != nil {
+		return err
+	}
+
+	if err := k.azureRetrieveAKSNodeResourceGroup(ctx); err != nil {
+		return err
+	}
+
+	return k.azureSetupServicePrincipal(ctx)
 }
 
-func (k *K8sInstaller) retrieveSubscriptionID(ctx context.Context) error {
+func (k *K8sInstaller) azureRetrieveSubscriptionID(ctx context.Context) error {
 	args := []string{"account", "show"}
 	if k.params.Azure.SubscriptionName != "" {
 		args = append(args, "--subscription", k.params.Azure.SubscriptionName)
@@ -72,13 +84,13 @@ func (k *K8sInstaller) retrieveSubscriptionID(ctx context.Context) error {
 		return fmt.Errorf("unable to unmarshal az output: %w", err)
 	}
 
-	k.Log("✅ Derived Azure Subscription ID %s from subscription %s", ai.ID, ai.Name)
+	k.Log("✅ Derived Azure subscription ID %s from subscription %s", ai.ID, ai.Name)
 	k.params.Azure.SubscriptionID = ai.ID
 
 	return nil
 }
 
-func (k *K8sInstaller) createAzureServicePrincipal(ctx context.Context) error {
+func (k *K8sInstaller) azureRetrieveAKSNodeResourceGroup(ctx context.Context) error {
 	/*
 		`az aks create` requires an existing resource group in which to create a
 		new AKS cluster, but a single resource group may hold multiple AKS clusters.
@@ -106,6 +118,10 @@ func (k *K8sInstaller) createAzureServicePrincipal(ctx context.Context) error {
 	k.Log("✅ Derived Azure AKS node resource group %s from resource group %s", clusterInfo.NodeResourceGroup, k.params.Azure.ResourceGroupName)
 	k.params.Azure.AksNodeResourceGroup = clusterInfo.NodeResourceGroup
 
+	return nil
+}
+
+func (k *K8sInstaller) azureSetupServicePrincipal(ctx context.Context) error {
 	if k.params.Azure.TenantID == "" && k.params.Azure.ClientID == "" && k.params.Azure.ClientSecret == "" {
 		k.Log("🚀 Creating Azure Service Principal for Cilium operator...")
 		/*
