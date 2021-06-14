@@ -23,6 +23,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang/protobuf/ptypes"
@@ -64,6 +65,11 @@ type Action struct {
 	// flows is a map of all flow logs, indexed by pod name
 	flows map[string]flowsSet
 
+	// flowsWithFollow gets written by a separate goroutine.
+	flowsWithFollow map[string]flowsSet
+	// protect access to flowsWithFollow map.
+	flowsWithFollowMutex sync.Mutex
+
 	flowResults map[string]FlowRequirementResults
 
 	// started is the timestamp the test started
@@ -78,14 +84,15 @@ type Action struct {
 
 func newAction(t *Test, name string, s Scenario, src *Pod, dst TestPeer) *Action {
 	return &Action{
-		name:        name,
-		test:        t,
-		scenario:    s,
-		src:         src,
-		dst:         dst,
-		started:     time.Now(),
-		flows:       map[string]flowsSet{},
-		flowResults: map[string]FlowRequirementResults{},
+		name:            name,
+		test:            t,
+		scenario:        s,
+		src:             src,
+		dst:             dst,
+		started:         time.Now(),
+		flows:           map[string]flowsSet{},
+		flowsWithFollow: map[string]flowsSet{},
+		flowResults:     map[string]FlowRequirementResults{},
 	}
 }
 
@@ -645,4 +652,95 @@ func (a *Action) getFlows(ctx context.Context, hubbleClient observer.ObserverCli
 		}
 
 	}
+}
+
+func (a *Action) FollowFlows(ctx context.Context, pod string) {
+	hubbleClient := a.test.ctx.HubbleClient()
+	if hubbleClient == nil {
+		return
+	}
+	a.Logf("📄 Following flows for pod %s", pod)
+	filter := []*flow.FlowFilter{{SourcePod: []string{pod}}, {DestinationPod: []string{pod}}}
+	request := &observer.GetFlowsRequest{Whitelist: filter, Follow: true}
+	b, err := hubbleClient.GetFlows(ctx, request)
+	if err != nil {
+		a.Warnf("GetFlows failed: %s", err)
+		return
+	}
+
+	for {
+		res, err := b.Recv()
+		if err != nil {
+			a.Debugf("Stopped following flows for pod %s", pod)
+			return
+		}
+		switch res.GetResponseTypes().(type) {
+		case *observer.GetFlowsResponse_Flow:
+			a.flowsWithFollowMutex.Lock()
+			a.flowsWithFollow[pod] = append(a.flowsWithFollow[pod], res)
+			a.flowsWithFollowMutex.Unlock()
+		}
+	}
+}
+
+// ValidateFlowsWithFollow retrieves the flow pods of the specified pod and validates
+// that all filters find a match. On failure, t.Fail() is called.
+// An error is returned if flow validation cannot be performed.
+func (a *Action) ValidateFlowsWithFollow(ctx context.Context, pod string, reqs []filters.FlowSetRequirement) {
+	if a.test.ctx.HubbleClient() == nil {
+		return
+	}
+	var res FlowRequirementResults
+	a.Logf("📄 Matching flows for pod %s", pod)
+	for i := 0; i < defaults.FlowMaxRetries; i++ {
+		time.Sleep(defaults.FlowRetryInterval)
+		a.flowsWithFollowMutex.Lock()
+		a.flows[pod] = make([]*observer.GetFlowsResponse, len(a.flowsWithFollow[pod]))
+		copy(a.flows[pod], a.flowsWithFollow[pod])
+		a.flowsWithFollowMutex.Unlock()
+		a.Debugf("Received %d flows so far", len(a.flows[pod]))
+		res = a.matchAllFlowRequirements(ctx, a.flows[pod], pod, reqs)
+		if !res.NeedMoreFlows && res.FirstMatch != -1 {
+			// matched everything.
+			break
+		}
+	}
+	a.flowResults[pod] = res
+	if res.Failures == 0 && res.FirstMatch >= 0 {
+		a.Logf("✅ Flow validation successful for pod %s (first: %d, last: %d, matched: %d)", pod, res.FirstMatch, res.LastMatch, len(res.Matched))
+	} else {
+		a.Failf("Flow validation failed for pod %s: %d failures (first: %d, last: %d, matched: %d)", pod, res.Failures, res.FirstMatch, res.LastMatch, len(res.Matched))
+		a.failed = true
+	}
+}
+
+func (a *Action) matchAllFlowRequirements(ctx context.Context, flows flowsSet, pod string, reqs []filters.FlowSetRequirement) FlowRequirementResults {
+	res := FlowRequirementResults{FirstMatch: -1, LastMatch: -1, NeedMoreFlows: false}
+	if len(reqs) == 0 {
+		return res
+	}
+	if len(flows) == 0 {
+		res.NeedMoreFlows = true
+		return res
+	}
+	for i, req := range reqs {
+		offset := 0
+		var r FlowRequirementResults
+		for offset < len(flows) {
+			r = a.matchFlowRequirements(ctx, flows, offset, pod, &req)
+			// Check if fully matched or no match for the first flow
+			if !r.NeedMoreFlows || r.FirstMatch == -1 {
+				break
+			}
+			// Try if some other flow instance would find both first and last required flows
+			offset = r.FirstMatch + 1
+		}
+		// Merge results
+		res.Merge(&r)
+		a.Debugf("Merged flow validation results #%d: %v", i, res)
+		if r.NeedMoreFlows {
+			break
+		}
+	}
+	return res
 }

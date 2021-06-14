@@ -85,6 +85,9 @@ const (
 
 	FlowWaitTimeout   = 10 * time.Second
 	FlowRetryInterval = 500 * time.Millisecond
+	// FlowMaxRetries defines the number of times we check flows for validation. Overall
+	// max wait time would be FlowRetryInterval * FlowMaxRetries.
+	FlowMaxRetries = 20
 
 	PolicyWaitTimeout = 15 * time.Second
 

@@ -52,13 +52,16 @@ func (s *podToWorld) Run(ctx context.Context, t *check.Test) {
 		cmd := curl(ghttps)
 
 		t.NewAction(s, "https-to-google", client, ghttps).Run(func(a *check.Action) {
+			newCtx, cancel := context.WithCancel(ctx)
+			go a.FollowFlows(newCtx, client.Name())
+			defer cancel()
 			a.ExecInPod(ctx, cmd)
 
 			egressFlowRequirements := a.GetEgressRequirements(check.FlowParameters{
 				DNSRequired: true,
 				RSTAllowed:  true,
 			})
-			a.ValidateFlows(ctx, client.Name(), client.Pod.Status.PodIP, egressFlowRequirements)
+			a.ValidateFlowsWithFollow(ctx, client.Name(), egressFlowRequirements)
 		})
 	}
 
@@ -67,13 +70,16 @@ func (s *podToWorld) Run(ctx context.Context, t *check.Test) {
 		cmd := curl(ghttp)
 
 		t.NewAction(s, "http-to-google", client, ghttp).Run(func(a *check.Action) {
+			newCtx, cancel := context.WithCancel(ctx)
+			go a.FollowFlows(newCtx, client.Name())
+			defer cancel()
 			a.ExecInPod(ctx, cmd)
 
 			egressFlowRequirements := a.GetEgressRequirements(check.FlowParameters{
 				DNSRequired: true,
 				RSTAllowed:  true,
 			})
-			a.ValidateFlows(ctx, client.Name(), client.Pod.Status.PodIP, egressFlowRequirements)
+			a.ValidateFlowsWithFollow(ctx, client.Name(), egressFlowRequirements)
 		})
 	}
 
@@ -82,13 +88,16 @@ func (s *podToWorld) Run(ctx context.Context, t *check.Test) {
 		cmd := curl(wwwghttp)
 
 		t.NewAction(s, "http-to-www-google", client, wwwghttp).Run(func(a *check.Action) {
+			newCtx, cancel := context.WithCancel(ctx)
+			go a.FollowFlows(newCtx, client.Name())
+			defer cancel()
 			a.ExecInPod(ctx, cmd)
 
 			egressFlowRequirements := a.GetEgressRequirements(check.FlowParameters{
 				DNSRequired: true,
 				RSTAllowed:  true,
 			})
-			a.ValidateFlows(ctx, client.Name(), client.Pod.Status.PodIP, egressFlowRequirements)
+			a.ValidateFlowsWithFollow(ctx, client.Name(), egressFlowRequirements)
 		})
 	}
 }
